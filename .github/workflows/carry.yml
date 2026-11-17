@@ -1,0 +1,271 @@
+name: carry
+
+# Builds upstream T3 nightlies with the PRs each machine picked (README.md).
+on:
+  issues:
+    types: [opened, edited, reopened, closed]
+  push:
+    branches: [carry]
+    paths: ["fixes/**"]
+  schedule:
+    # Both before t3-update's 04:30 Europe/Budapest run, summer and winter; the second retries what the first didn't build.
+    - cron: "50 0 * * *"
+    - cron: "50 1 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: carry
+  cancel-in-progress: false
+
+env:
+  GH_REPO: ${{ github.repository }}
+  UPSTREAM: pingdotgg/t3code
+  PICK: "^pick [1-9][0-9]{0,6} [0-9a-f]{40}$"
+
+jobs:
+  plan:
+    # The requesters, the machines' gh logins: here, and in REQUESTERS below (a job `if:` can't read env).
+    if: github.event_name != 'issues' || contains(fromJSON('["nitedani","nitedani-agent"]'), github.event.issue.user.login)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REQUESTERS: '["nitedani","nitedani-agent"]'
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      keys: ${{ steps.plan.outputs.keys }}
+      work: ${{ steps.plan.outputs.work }}
+    steps:
+      - id: plan
+        name: Read the requests and the newest nightly
+        run: |
+          set -euo pipefail
+          version=$(gh api "repos/$UPSTREAM/releases?per_page=50" --jq '[.[] | select(.draft | not)
+            | select(.tag_name | test("^v[0-9.]+-nightly\\.[0-9]{8}\\.[0-9]+$"))] | sort_by(.published_at) | last | .tag_name // "" | ltrimstr("v")')
+          [ -n "$version" ] || { echo "::error::no nightly release on $UPSTREAM"; exit 1; }
+          echo "newest nightly: $version"
+
+          : > requests.jsonl
+          gh api --paginate "repos/$GH_REPO/issues?state=open&per_page=100" |
+            jq -c --argjson who "$REQUESTERS" '.[] | select(.pull_request == null and (.user.login | IN($who[]))) | {number, body: (.body // "")}' > issues.jsonl
+          while IFS= read -r issue; do
+            n=$(jq -r .number <<<"$issue")
+            body=$(jq -r .body <<<"$issue" | tr -d '\r')
+            picks=$(grep -E "$PICK" <<<"$body" | LC_ALL=C sort -k2,2n) || true
+            step='' error='' culprit=''
+            if grep -vqE "$PICK|^\$" <<<"$body"; then step=parse error="a line is not 'pick <pr> <sha40>'"
+            elif [ "$(grep -c . <<<"$picks")" -gt 10 ]; then step=parse error="more than 10 picks"
+            elif [ -n "$(cut -d' ' -f2 <<<"$picks" | uniq -d)" ]; then step=parse error="a PR is picked twice"
+            else
+              while read -r _ pr sha; do
+                [ -n "$pr" ] || continue
+                if ! gh api --paginate "repos/$UPSTREAM/pulls/$pr/commits?per_page=100" --jq '.[].sha' | grep -x "$sha" >/dev/null; then
+                  step=pin error="$sha is not a commit of #$pr; pick it again" culprit=$pr
+                  break
+                fi
+                # Upstream merged it: drop the pick. Upstream squash-merges, so the merge commit is what the nightly holds.
+                merged=$(gh api "repos/$UPSTREAM/pulls/$pr" --jq 'select(.merged) | .merge_commit_sha')
+                status=''
+                [ -z "$merged" ] || status=$(gh api "repos/$UPSTREAM/compare/$merged...v$version" --jq .status)
+                case $status in
+                  ahead | identical)
+                    body=$(grep -vxF "pick $pr $sha" <<<"$body") || true
+                    gh issue edit "$n" --body "$body"
+                    gh issue comment "$n" --body "dropped #$pr: merged upstream in $version"
+                    picks=$(grep -vxF "pick $pr $sha" <<<"$picks") || true
+                    ;;
+                esac
+              done <<<"$picks"
+            fi
+            [ -n "$picks" ] || { echo "#$n: no picks"; continue; }
+            # t3-update computes the key with this same line.
+            key=$(printf '%s\n' "$picks" | sha256sum | cut -c1-16)
+            echo "#$n: key $key${error:+, $step: $error}"
+            jq -nc --arg key "$key" --arg picks "$picks" --arg step "$step" --arg error "$error" --arg culprit "$culprit" '{$key, $picks, $step, $error, $culprit}' >> requests.jsonl
+          done < issues.jsonl
+
+          echo '[]' > work.json
+          jq -sc 'unique_by(.key)' requests.jsonl > requests.json
+          for key in $(jq -r '.[].key' requests.json); do
+            if gh release view "c/$key/v$version.c$key" --json assets --jq '.assets[].name' 2>/dev/null | grep -x SHA256SUMS >/dev/null; then
+              echo "c/$key/v$version.c$key: built"
+            else
+              jq -c --arg key "$key" --slurpfile r requests.json '. + [$r[0][] | select(.key == $key)]' work.json > w && mv w work.json
+            fi
+          done
+          {
+            echo "version=$version"
+            echo "keys=$(jq -c 'map(.key)' requests.json)"
+            echo "work=$(cat work.json)"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.work != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.work) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KEY: ${{ matrix.key }}
+      PICKS: ${{ matrix.picks }}
+      ERROR: ${{ matrix.error }}
+      V: ${{ needs.plan.outputs.version }}
+      # The carried build's own version: above V and below the next nightly, so it never shares V's install.
+      VC: ${{ needs.plan.outputs.version }}.c${{ matrix.key }}
+      T3CODE_TELEMETRY_CHANNEL: dev
+    steps:
+      - id: checkout
+        name: Check out the nightly and the fixes
+        run: |
+          set -euo pipefail
+          [ -z "$ERROR" ] || { echo "::error::$ERROR"; exit 1; }
+          git init -q .
+          git remote add origin "https://github.com/$UPSTREAM.git"
+          git fetch -q --filter=blob:none --no-tags origin "+refs/tags/v$V:refs/tags/v$V"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout -q --detach "v$V"
+          git config user.name carry
+          git config user.email carry@users.noreply.github.com
+          git init -q "$RUNNER_TEMP/carry"
+          git -C "$RUNNER_TEMP/carry" fetch -q --depth=1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          git -C "$RUNNER_TEMP/carry" checkout -q FETCH_HEAD
+          grep -E '^T3CODE_(CLERK_PUBLISHABLE_KEY|CLERK_JWT_TEMPLATE|CLERK_CLI_OAUTH_CLIENT_ID|RELAY_URL)=' .env.example >> "$GITHUB_ENV"
+
+      - id: apply
+        name: Apply the picks
+        run: |
+          set -euo pipefail
+          conflict() { git diff --name-only --diff-filter=U | tee "$RUNNER_TEMP/files"; echo "$pr" > "$RUNNER_TEMP/culprit"; exit 1; }
+          while read -r _ pr sha; do
+            fix=$RUNNER_TEMP/carry/fixes/$pr-$sha.patch
+            git fetch -q --filter=blob:none --no-tags origin "$sha"
+            if [ -f "$fix" ]; then
+              echo "#$pr at $sha: applying fixes/$pr-$sha.patch"
+              git apply --3way --index "$fix" || conflict
+              git commit -q -m "carry #$pr at $sha (fix)"
+            else
+              echo "#$pr at $sha: merging"
+              git merge -q --no-edit -m "carry #$pr at $sha" "$sha" || conflict
+            fi
+          done <<<"$PICKS"
+
+      # From here: release.yml's build_bundle and release-desktop.yml's Linux x64 CLI archive, at the nightly.
+      - id: setup
+        name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - id: versions
+        name: Align package versions to the release version
+        run: node scripts/update-release-package-versions.ts "$VC"
+
+      - id: typecheck
+        name: Typecheck
+        run: vp run --filter 't3...' --filter '@t3tools/web...' typecheck
+
+      - id: bundle
+        name: Build JS bundle
+        run: vp run build:desktop:bundle
+
+      - id: branding
+        name: Apply web client branding
+        run: node scripts/apply-web-brand-assets.ts nightly apps/server/dist/client
+
+      - id: monitor
+        name: Build resource monitor
+        run: |
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-unknown-linux-gnu
+          mkdir -p "$RUNNER_TEMP/cli-resource-monitor/linux-x64"
+          cp native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor "$RUNNER_TEMP/cli-resource-monitor/linux-x64/"
+
+      - id: exe
+        name: Build CLI single-executable
+        run: node apps/server/scripts/cli.ts build-exe --verbose
+
+      - id: patchelf
+        name: Install patchelf
+        run: command -v patchelf || { sudo apt-get update && sudo apt-get install -y patchelf; }
+
+      - id: archive
+        name: Build CLI archive
+        run: node scripts/build-cli-archive.ts --platform linux --arch x64 --version "$VC" --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" --output-dir release-cli
+
+      - id: smoke
+        name: Smoke-test CLI archive
+        run: node scripts/smoke-cli-archive.ts --archive "release-cli/t3-$VC-linux-x64.tar.gz" --expect-version "$VC"
+
+      - name: Publish the release
+        if: always()
+        env:
+          STEP: ${{ matrix.step }}
+          CULPRIT: ${{ matrix.culprit }}
+          STEPS: ${{ toJSON(steps) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          archive=t3-$VC-linux-x64.tar.gz assets=() sha=''
+          failed=$(jq -r '[to_entries[] | select(.value.outcome == "failure") | .key][0] // ""' <<<"$STEPS")
+          if [ -n "$ERROR" ]; then state=failed step=$STEP
+          elif [ "$failed" = apply ]; then state=not-applied step=apply
+          elif [ -n "$failed" ]; then state=failed step=$failed
+          elif [ "$(jq -r .smoke.outcome <<<"$STEPS")" = success ]; then state=built step=''
+          else state=failed step=cancelled
+          fi
+          if [ "$state" = built ]; then
+            (cd release-cli && sha256sum "$archive") > SHA256SUMS
+            sha=$(cut -d' ' -f1 SHA256SUMS)
+            assets=("release-cli/$archive" SHA256SUMS)
+          fi
+          touch "$RUNNER_TEMP/files"
+          # The pick a set failed on, when one did: the plan's pin check, or the apply step's conflict.
+          [ -s "$RUNNER_TEMP/culprit" ] && CULPRIT=$(cat "$RUNNER_TEMP/culprit")
+          jq -n --arg key "$KEY" --arg nightly "$V" --arg version "$VC" --arg carry "$GITHUB_SHA" --arg state "$state" --arg step "$step" \
+            --arg error "$ERROR" --rawfile files "$RUNNER_TEMP/files" --arg picks "$PICKS" --arg culprit "$CULPRIT" --arg sha "$sha" --arg run "$RUN_URL" \
+            '{key: $key, nightly: $nightly, version: $version, carryCommit: $carry, state: $state, step: $step, error: $error,
+              files: ($files | split("\n") | map(select(. != ""))),
+              picks: [$picks | split("\n")[] | select(. != "") | split(" ") | {pr: (.[1] | tonumber), sha: .[2]}
+                | .state = if $state == "built" then "carried" elif $culprit == "" or $culprit == (.pr | tostring) then $state else "blocked" end],
+              archiveSha256: $sha, run: $run}' > carry.json
+          cat carry.json
+          tag=c/$KEY/v$VC
+          if gh release view "$tag" >/dev/null 2>&1; then gh release delete "$tag" --cleanup-tag --yes; fi
+          gh release create "$tag" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "$(jq -r '[.picks[] | "#\(.pr)@\(.sha[:9])"] | join(" ")' carry.json) on $VC: $state" \
+            --notes-file carry.json carry.json ${assets[@]+"${assets[@]}"}
+
+  prune:
+    needs: [plan, build]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KEYS: ${{ needs.plan.outputs.keys }}
+    steps:
+      # A machine may be downloading a release a request no longer names, so none younger than a day goes.
+      - name: Keep the newest two releases of each requested key, and every release younger than a day
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" | jq -rs --argjson keys "$KEYS" '
+            [add[] | select(.tag_name | startswith("c/")) | {tag: .tag_name, key: (.tag_name | split("/")[1]), at: .published_at}]
+            | group_by(.key)[] | sort_by(.at) | reverse
+            | if .[0].key | IN($keys[]) then .[2:][] else .[] end
+            | select((.at | fromdateiso8601) < now - 86400) | .tag' |
+          while IFS= read -r tag; do
+            echo "deleting $tag"
+            gh release delete "$tag" --cleanup-tag --yes
+          done

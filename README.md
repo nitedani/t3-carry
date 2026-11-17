@@ -57,7 +57,7 @@ A `built` release also has `t3-<V'>-linux-x64.tar.gz` and `SHA256SUMS`, and the 
 T3CODE_RELEASE_BASE_URL=https://github.com/nitedani/t3-carry/releases/download/c/<key> t3 update --yes <V'>
 ```
 
-On anything but a `built` release from the last 36 hours, or when that update fails, the machine takes the plain nightly (`t3 update --yes --channel nightly`; T3 counts `<V'>` as stable). Each run keeps the newest two releases of each requested key and every release younger than a day, and deletes every other `c/*` release with its tag.
+On anything but a `built` release from the last 36 hours, or when that update fails, the machine takes the plain nightly (`t3 update --yes --channel nightly`; T3 counts `<V'>` as stable). Each run keeps the newest two releases of each requested key and every release younger than a day, and deletes every other `c/*` release with its tag. Each run also re-enables the workflow through GitHub's API, since GitHub disables a public repo's schedules after 60 days without activity.
 
 ## Resolve
 

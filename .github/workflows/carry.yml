@@ -255,6 +255,18 @@ jobs:
             --title "$(jq -r '[.picks[] | "#\(.pr)@\(.sha[:9]) \(.state)"] | join(", ")' carry.json) on $VC" \
             --notes-file carry.json carry.json ${assets[@]+"${assets[@]}"}
 
+  keepalive:
+    # GitHub disables a public repo's schedules after 60 days without activity; re-enabling the workflow needs no commit.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Keep the schedule enabled
+        run: gh api -X PUT "repos/$GH_REPO/actions/workflows/carry.yml/enable"
+
   prune:
     needs: [plan, build]
     if: always() && needs.plan.result == 'success'

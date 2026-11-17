@@ -21,7 +21,7 @@ env:
   UPSTREAM: pingdotgg/t3code
   # The machines' gh logins; other authors' issues are not requests.
   REQUESTERS: '["nitedani","nitedani-agent"]'
-  PICK: "^pick [1-9][0-9]{0,6} [0-9a-f]{40}$"
+  PICK: "^pick [1-9][0-9]{0,6} [0-9a-f]{40}( [0-9a-f]{40})?$"
 
 jobs:
   plan:
@@ -46,10 +46,10 @@ jobs:
           [ -n "$version" ] || { echo "::error::no nightly release on $UPSTREAM"; exit 1; }
           echo "newest nightly: $version"
 
-          # One pick's upstream facts. merged: its merge commit is in the nightly (upstream squash-merges, so the picked sha
+          # One pick (pr, sha, res) and its upstream facts. merged: its merge commit is in the nightly (upstream squash-merges, so the picked sha
           # never is). supersededBy: closed unmerged, the PR the newest member's comment names. pinned: sha is the PR's.
           facts() {
-            local pr=$1 sha=$2 pull merged=false superseded=null pinned=false
+            local pr=$1 sha=$2 res=$3 pull merged=false superseded=null pinned=false
             pull=$(gh api "repos/$UPSTREAM/pulls/$pr")
             if [ "$(jq -r .merged <<<"$pull")" = true ]; then
               case $(gh api "repos/$UPSTREAM/compare/$(jq -r .merge_commit_sha <<<"$pull")...v$version" --jq .status) in
@@ -61,18 +61,18 @@ jobs:
                 | [scan("(?:#|/pulls?/)([0-9]+)")[0] | tonumber | select(. != $pr)][0]')
             fi
             if gh api --paginate "repos/$UPSTREAM/pulls/$pr/commits?per_page=100" --jq '.[].sha' | grep -x "$sha" >/dev/null; then pinned=true; fi
-            jq -c --arg sha "$sha" --argjson merged "$merged" --argjson superseded "$superseded" --argjson pinned "$pinned" \
-              '{pr: .number, $sha, res: null, upstream: (if .merged then "merged" else .state end), head: .head.sha, supersededBy: $superseded, $merged, $pinned}' <<<"$pull"
+            jq -c --arg sha "$sha" --arg res "$res" --argjson merged "$merged" --argjson superseded "$superseded" --argjson pinned "$pinned" \
+              '{pr: .number, $sha, res: (if $res == "" then null else $res end), upstream: (if .merged then "merged" else .state end), head: .head.sha, supersededBy: $superseded, $merged, $pinned}' <<<"$pull"
           }
 
           : > requests.jsonl
           gh api --paginate "repos/$GH_REPO/issues?state=open&per_page=100" |
-            jq -c --argjson who "$REQUESTERS" '.[] | select(.pull_request == null and (.user.login | IN($who[]))) | {number, body: (.body // "")}' > issues.jsonl
+            jq -c --argjson who "$REQUESTERS" '.[] | select(.pull_request == null and (.user.login | IN($who[]))) | {number, author: .user.login, body: (.body // "")}' > issues.jsonl
           while IFS= read -r issue; do
-            n=$(jq -r .number <<<"$issue")
+            n=$(jq -r .number <<<"$issue") author=$(jq -r .author <<<"$issue")
             body=$(jq -r .body <<<"$issue" | tr -d '\r')
             picks=$(grep -E "$PICK" <<<"$body" | LC_ALL=C sort -k2,2n) || true
-            if grep -vqE "$PICK|^\$" <<<"$body"; then echo "::error::#$n: a line is not 'pick <pr> <sha40>'"; continue
+            if grep -vqE "$PICK|^\$" <<<"$body"; then echo "::error::#$n: a line is not 'pick <pr> <sha40> [<res40>]'"; continue
             elif [ "$(grep -c . <<<"$picks")" -gt 10 ]; then echo "::error::#$n: more than 10 picks"; continue
             elif [ -n "$(cut -d' ' -f2 <<<"$picks" | uniq -d)" ]; then echo "::error::#$n: a PR is picked twice"; continue
             fi
@@ -80,7 +80,8 @@ jobs:
             # t3-update computes the key with this same line.
             key=$(printf '%s\n' "$picks" | sha256sum | cut -c1-16)
             echo "#$n: key $key"
-            while read -r _ pr sha; do facts "$pr" "$sha"; done <<<"$picks" | jq -sc --arg key "$key" '{$key, picks: .}' >> requests.jsonl
+            while read -r _ pr sha res; do facts "$pr" "$sha" "$res"; done <<<"$picks" |
+              jq -sc --arg key "$key" --arg author "$author" '{$key, $author, picks: .}' >> requests.jsonl
           done < issues.jsonl
 
           echo '[]' > work.json
@@ -112,6 +113,7 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.work) }}
     env:
       KEY: ${{ matrix.key }}
+      AUTHOR: ${{ matrix.author }}
       PICKS: ${{ toJSON(matrix.picks) }}
       V: ${{ needs.plan.outputs.version }}
       # The carried build's own version: above V and below the next nightly, so it never shares V's install.
@@ -132,6 +134,10 @@ jobs:
           for sha in $(jq -r '.[] | select(.pinned and (.merged | not)) | .sha' <<<"$PICKS"); do
             git fetch -q --filter=blob:none --no-tags origin "$sha"
           done
+          # A resolution is read only from the requester's own fork, with its blobs, which upstream doesn't have.
+          for res in $(jq -r '.[] | select(.pinned and (.merged | not)) | .res // empty' <<<"$PICKS"); do
+            git fetch -q --no-tags "https://github.com/$AUTHOR/t3code.git" "$res" || echo "::warning::$res is not on $AUTHOR/t3code"
+          done
           grep -E '^T3CODE_(CLERK_PUBLISHABLE_KEY|CLERK_JWT_TEMPLATE|CLERK_CLI_OAUTH_CLIENT_ID|RELAY_URL)=' .env.example >> "$GITHUB_ENV"
 
       # From here: release.yml's build_bundle and release-desktop.yml's Linux x64 CLI archive, at the nightly.
@@ -151,24 +157,46 @@ jobs:
           for pr in $(jq -r '.[] | select(.merged) | .pr' <<<"$PICKS"); do state "$pr" merged; done
           for pr in $(jq -r '.[] | select(.pinned or .merged | not) | .pr' <<<"$PICKS"); do state "$pr" unpinned; done
 
-          # The nightly with the picks merged in PR order; one that conflicts is left out. applied: the picks merged.
+          # res holds the pick, and its own first-parent line (what neither the tree nor the pick has) starts with a merge and
+          # merges only the pick or code already in the tree, so a resolution made over a pick that is gone can't bring it back.
+          resolves() {
+            local sha=$1 res=$2 others parent lowest=''
+            git merge-base --is-ancestor "$sha" "$res" || return 1
+            while read -r _ _ others; do
+              lowest=$others
+              for parent in $others; do
+                [ "$parent" = "$sha" ] || git merge-base --is-ancestor "$parent" HEAD || return 1
+              done
+            done < <(git rev-list --first-parent --parents "$res" ^HEAD "^$sha")
+            [ -n "$lowest" ]
+          }
+          # The nightly with the picks merged in PR order, each by its resolution if it has one; one that conflicts is left
+          # out. applied: the picks merged; resolved: the shas of those merged by a resolution.
           apply() {
-            local pr sha
-            applied=()
+            local pr sha res
+            applied=() resolved=()
             git checkout -qf --detach "v$V" && git clean -ffdxq -e node_modules || exit 1
             for pr in "$@"; do
-              sha=$(jq -r --argjson pr "$pr" '.[] | select(.pr == $pr) | .sha' <<<"$PICKS")
-              if git merge -q --no-edit -m "carry #$pr at $sha" "$sha"; then applied+=("$pr")
+              read -r sha res < <(jq -r --argjson pr "$pr" '.[] | select(.pr == $pr) | "\(.sha) \(.res // "")"' <<<"$PICKS")
+              if [ -n "$res" ] && ! resolves "$sha" "$res"; then
+                echo "::warning::#$pr: $res is not a resolution of $sha onto tonight's tree"; state "$pr" doesnt-apply
+              elif git merge -q --no-edit -m "carry #$pr at $sha" "${res:-$sha}"; then
+                applied+=("$pr")
+                [ -z "$res" ] || resolved+=("$sha")
               else git merge --abort; state "$pr" doesnt-apply
               fi
             done
           }
           build() {
+            local tests sha
             echo "::group::build: the nightly and ${applied[*]:-no pick}"
+            # The test files a resolved pick changes.
+            mapfile -t tests < <(for sha in "${resolved[@]}"; do git diff --name-only --diff-filter=d "v$V...$sha"; done | grep -E '\.test\.tsx?$' | sort -u)
             # shellcheck disable=SC2086 # each filter is its own argument
             vp install $INSTALL_ARGS &&
               node scripts/update-release-package-versions.ts "$VC" &&
               vp run --filter 't3...' --filter '@t3tools/web...' typecheck &&
+              { [ ${#tests[@]} -eq 0 ] || vp test run "${tests[@]}"; } &&
               vp run build:desktop:bundle &&
               node scripts/apply-web-brand-assets.ts nightly apps/server/dist/client &&
               cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-unknown-linux-gnu &&

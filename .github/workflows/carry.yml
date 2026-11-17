@@ -46,8 +46,9 @@ jobs:
           [ -n "$version" ] || { echo "::error::no nightly release on $UPSTREAM"; exit 1; }
           echo "newest nightly: $version"
 
-          # One pick (pr, sha, res) and its upstream facts. merged: its merge commit is in the nightly (upstream squash-merges, so the picked sha
-          # never is). supersededBy: closed unmerged, the PR the newest member's comment names. pinned: sha is the PR's.
+          # One pick (pr, sha, res) and its upstream facts. merged: its merge commit is in the nightly (upstream squash-merges,
+          # so the picked sha never is). supersededBy: closed unmerged, the PR the newest member's comment names. pinned: sha
+          # is the PR's.
           facts() {
             local pr=$1 sha=$2 res=$3 pull merged=false superseded=null pinned=false
             pull=$(gh api "repos/$UPSTREAM/pulls/$pr")

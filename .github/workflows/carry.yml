@@ -152,9 +152,9 @@ jobs:
           for pr in $(jq -r '.[] | select(.pinned or .merged | not) | .pr' <<<"$PICKS"); do state "$pr" unpinned; done
 
           # The nightly with the picks merged in PR order; one that conflicts is left out. applied: the picks merged.
-          applied=()
           apply() {
             local pr sha
+            applied=()
             git checkout -qf --detach "v$V" && git clean -ffdxq -e node_modules || exit 1
             for pr in "$@"; do
               sha=$(jq -r --argjson pr "$pr" '.[] | select(.pr == $pr) | .sha' <<<"$PICKS")
@@ -184,13 +184,24 @@ jobs:
 
           mapfile -t candidates < <(jq -r '.[] | select(.pinned and (.merged | not)) | .pr' <<<"$PICKS")
           apply "${candidates[@]}"
-          if [ ${#applied[@]} -gt 0 ]; then
+          if [ ${#applied[@]} -gt 0 ] && ! build; then
+            # The nightly alone, then each pick alone, then once more with the picks that built alone.
+            together=("${applied[@]}") passing=()
+            for pr in "${together[@]}"; do state "$pr" doesnt-build; done
+            apply
             if build; then
-              for pr in "${applied[@]}"; do state "$pr" carried; done
+              for pr in "${together[@]}"; do
+                apply "$pr"
+                if [ ${#applied[@]} -eq 1 ] && build; then passing+=("$pr"); fi
+              done
             else
-              for pr in "${applied[@]}"; do state "$pr" doesnt-build; done
+              echo broken > "$RUNNER_TEMP/recipe"
             fi
+            applied=()
+            [ ${#passing[@]} -eq 0 ] || apply "${passing[@]}"
+            [ ${#applied[@]} -eq 0 ] || build || applied=()
           fi
+          for pr in "${applied[@]}"; do state "$pr" carried; done
 
       - name: Publish the release
         env:
@@ -198,12 +209,12 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          archive=t3-$VC-linux-x64.tar.gz assets=()
-          jq -n --arg nightly "$V" --arg version "$VC" --argjson picks "$PICKS" --arg run "$RUN_URL" --rawfile states "$RUNNER_TEMP/states" '
+          archive=t3-$VC-linux-x64.tar.gz assets=() recipe=$(cat "$RUNNER_TEMP/recipe" 2>/dev/null || echo ok)
+          jq -n --arg nightly "$V" --arg version "$VC" --arg recipe "$recipe" --argjson picks "$PICKS" --arg run "$RUN_URL" --rawfile states "$RUNNER_TEMP/states" '
             ($states | split("\n") | map(select(. != "") | split(" ") | {(.[0]): .[1]}) | add) as $s
             | [$picks[] | {pr, sha, res, state: $s[.pr | tostring], upstream, head, supersededBy}] as $p
             | {schema: 2, $nightly, $version, state: (if any($p[]; .state == "carried") then "built" else "not-built" end),
-               recipe: "ok", picks: $p, $run}' > carry.json
+               $recipe, picks: $p, $run}' > carry.json
           cat carry.json
           if [ "$(jq -r .state carry.json)" = built ]; then
             (cd release-cli && sha256sum "$archive") > SHA256SUMS

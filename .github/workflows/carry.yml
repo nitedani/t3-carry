@@ -188,6 +188,23 @@ jobs:
               fi
             done
           }
+          # Each test file runs inside its own package with `vp test run <files>`, as upstream's windows-tests.yml runs chosen
+          # files: from the repo root its config loads every package's, apps/mobile's too, which this build doesn't install.
+          # A package this build doesn't install ships nothing in it, so its tests are skipped.
+          run_tests() {
+            local f d
+            local -A files=()
+            for f; do
+              d=$(dirname "$f")
+              while [ "$d" != . ] && [ ! -f "$d/package.json" ]; do d=$(dirname "$d"); done
+              files[$d]+=" ${f#"$d"/}"
+            done
+            for d in "${!files[@]}"; do
+              if [ ! -d "$d/node_modules" ]; then echo "not built here, tests skipped:${files[$d]}"; continue; fi
+              # shellcheck disable=SC2086 # each file is its own argument
+              (cd "$d" && vp test run ${files[$d]}) || return
+            done
+          }
           build() {
             local tests sha
             echo "::group::build: the nightly and ${applied[*]:-no pick}"
@@ -197,7 +214,7 @@ jobs:
             vp install $INSTALL_ARGS &&
               node scripts/update-release-package-versions.ts "$VC" &&
               vp run --filter 't3...' --filter '@t3tools/web...' typecheck &&
-              { [ ${#tests[@]} -eq 0 ] || vp test run "${tests[@]}"; } &&
+              run_tests "${tests[@]}" &&
               vp run build:desktop:bundle &&
               node scripts/apply-web-brand-assets.ts nightly apps/server/dist/client &&
               cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-unknown-linux-gnu &&

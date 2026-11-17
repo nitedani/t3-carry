@@ -54,7 +54,7 @@ The build gets its own version `<V'>` = `<V>.c<key>` (for example `0.1.11-nightl
 A `built` release also has `t3-<V'>-linux-x64.tar.gz` and `SHA256SUMS`, and the machine installs it with:
 
 ```bash
-T3CODE_RELEASE_BASE_URL=https://github.com/nitedani/t3-carry/releases/download/c/<key> t3 update --yes --version <V'>
+T3CODE_RELEASE_BASE_URL=https://github.com/nitedani/t3-carry/releases/download/c/<key> t3 update --yes <V'>
 ```
 
 On anything but a `built` release from the last 36 hours, or when that update fails, the machine takes the plain nightly (`t3 update --yes --channel nightly`; T3 counts `<V'>` as stable). Each run keeps the newest two releases of each requested key and every release younger than a day, and deletes every other `c/*` release with its tag.

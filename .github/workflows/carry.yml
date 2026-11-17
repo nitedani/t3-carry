@@ -205,7 +205,8 @@ jobs:
               cp native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor "$RUNNER_TEMP/cli-resource-monitor/linux-x64/" &&
               node apps/server/scripts/cli.ts build-exe --verbose &&
               node scripts/build-cli-archive.ts --platform linux --arch x64 --version "$VC" --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" --output-dir release-cli &&
-              node scripts/smoke-cli-archive.ts --archive "release-cli/t3-$VC-linux-x64.tar.gz" --expect-version "$VC"
+              node scripts/smoke-cli-archive.ts --archive "release-cli/t3-$VC-linux-x64.tar.gz" --expect-version "$VC" &&
+              cp "release-cli/t3-$VC-linux-x64.tar.gz" "$RUNNER_TEMP/"
             local rc=$?
             echo "::endgroup::"
             return $rc
@@ -214,21 +215,20 @@ jobs:
           mapfile -t candidates < <(jq -r '.[] | select(.pinned and (.merged | not)) | .pr' <<<"$PICKS")
           apply "${candidates[@]}"
           if [ ${#applied[@]} -gt 0 ] && ! build; then
-            # The nightly alone, then each pick alone, then once more with the picks that built alone.
-            together=("${applied[@]}") passing=()
+            # The nightly alone, then in PR order each pick over the picks kept so far, which a resolution was made over;
+            # a pick is kept when that builds. The last build that passed left its archive in $RUNNER_TEMP.
+            together=("${applied[@]}") kept=()
             for pr in "${together[@]}"; do state "$pr" doesnt-build; done
             apply
             if build; then
               for pr in "${together[@]}"; do
-                apply "$pr"
-                if [ ${#applied[@]} -eq 1 ] && build; then passing+=("$pr"); fi
+                apply "${kept[@]}" "$pr"
+                if [ ${#applied[@]} -gt ${#kept[@]} ] && build; then kept+=("$pr"); fi
               done
             else
               echo broken > "$RUNNER_TEMP/recipe"
             fi
-            applied=()
-            [ ${#passing[@]} -eq 0 ] || apply "${passing[@]}"
-            [ ${#applied[@]} -eq 0 ] || build || applied=()
+            applied=("${kept[@]}")
           fi
           for pr in "${applied[@]}"; do state "$pr" carried; done
 
@@ -246,8 +246,8 @@ jobs:
                $recipe, picks: $p, $run}' > carry.json
           cat carry.json
           if [ "$(jq -r .state carry.json)" = built ]; then
-            (cd release-cli && sha256sum "$archive") > SHA256SUMS
-            assets=("release-cli/$archive" SHA256SUMS)
+            (cd "$RUNNER_TEMP" && sha256sum "$archive") > SHA256SUMS
+            assets=("$RUNNER_TEMP/$archive" SHA256SUMS)
           fi
           tag=c/$KEY/v$VC
           if gh release view "$tag" >/dev/null 2>&1; then gh release delete "$tag" --cleanup-tag --yes; fi

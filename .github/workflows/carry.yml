@@ -273,15 +273,19 @@ jobs:
             return $rc
           }
           # Sets cause for pick $1, which doesn't build over the kept picks: alone when it fails over the nightly alone, else the
-          # first kept pick that, with the kept picks before it, makes it fail.
+          # last kept pick of the shortest run of kept picks it fails over, found by bisection.
           blame() {
-            local i
+            local lo=0 hi=${#kept[@]} mid
             cause=alone
-            for ((i = 0; i < ${#kept[@]}; i++)); do
-              apply "${kept[@]:0:i}" "$1"
-              if [ ${#applied[@]} -gt "$i" ] && ! probe=1 build; then return; fi
-              cause=${kept[i]}
+            ((hi > 0)) || return 0
+            apply "$1"
+            if [ ${#applied[@]} -gt 0 ] && ! probe=1 build; then return 0; fi
+            while ((hi - lo > 1)); do
+              mid=$(((lo + hi) / 2))
+              apply "${kept[@]:0:mid}" "$1"
+              if [ ${#applied[@]} -gt "$mid" ] && ! probe=1 build; then hi=$mid; else lo=$mid; fi
             done
+            cause=${kept[hi - 1]}
           }
 
           mapfile -t candidates < <(jq -r '.[] | select(.pinned and (.merged | not)) | .pr' <<<"$PICKS")

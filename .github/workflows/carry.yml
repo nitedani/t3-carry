@@ -155,6 +155,10 @@ jobs:
     name: build ${{ matrix.key }}
     needs: plan
     if: needs.plan.outputs.work != '[]'
+    # An issue run and a scheduled or manual run may both build one key; they take turns, and the second keeps the release.
+    concurrency:
+      group: carry-key-${{ matrix.key }}
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -321,7 +325,9 @@ jobs:
             assets=("$RUNNER_TEMP/$archive" SHA256SUMS)
           fi
           tag=c/$KEY/v$VC
-          if gh release view "$tag" >/dev/null 2>&1; then gh release delete "$tag" --cleanup-tag --yes; fi
+          if gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null | grep -x SHA256SUMS >/dev/null; then
+            echo "$tag: another run published it, kept"; exit 0
+          elif gh release view "$tag" >/dev/null 2>&1; then gh release delete "$tag" --cleanup-tag --yes; fi
           gh release create "$tag" --target "$GITHUB_SHA" --prerelease --latest=false \
             --title "$(jq -r '[.picks[] | "#\(.pr)@\(.sha[:9]) \(.state)"] | join(", ")' carry.json) on $VC" \
             --notes-file carry.json carry.json ${assets[@]+"${assets[@]}"}

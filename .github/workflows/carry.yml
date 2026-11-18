@@ -8,6 +8,7 @@ on:
     types: [opened, edited, reopened]
   schedule:
     # Both before t3-update's 04:30 Europe/Budapest run, summer and winter; the second retries what the first didn't build.
+    # The dashboard (claude-swap's carry.ts, nightDue) expects their run by 03:00 UTC, GitHub's delay included.
     - cron: "50 0 * * *"
     - cron: "50 1 * * *"
   workflow_dispatch:

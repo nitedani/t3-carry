@@ -133,13 +133,13 @@ jobs:
 
           echo '[]' > work.json
           jq -sc 'unique_by(.key)' requests.jsonl > requests.json
-          # An issue event's run builds only its request, and only when every pick applies: the dashboard asks for a fix first.
-          # A scheduled or manual run builds the picks that apply, since nobody is there to fix the others.
+          # A key is built only when every pick applies, since a machine installs only a build that carries all its picks: a
+          # pick that doesn't waits for a Resolve press. An issue event's run builds only its request.
           mapfile -t keys < <(sort -u wanted)
           for key in "${keys[@]}"; do
             if gh release view "c/$key/v$version.c$key" --json assets --jq '.assets[].name' 2>/dev/null | grep -x SHA256SUMS >/dev/null; then
               echo "c/$key/v$version.c$key: built"
-            elif [ -n "$ISSUE" ] && ! applies "$key"; then
+            elif ! applies "$key"; then
               echo "::warning::c/$key/v$version.c$key: not built, since a pick doesn't apply"
             else
               jq -c --arg key "$key" --slurpfile r requests.json '. + [$r[0][] | select(.key == $key)]' work.json > w && mv w work.json

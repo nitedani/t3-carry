@@ -20,7 +20,7 @@ key=$(printf '%s\n' "$picks" | sha256sum | cut -c1-16)
 
 ## Builds
 
-At 00:50 and 01:50 UTC and by hand (`gh workflow run carry.yml -R nitedani/t3-carry`), the workflow takes the newest upstream nightly `v<V>` and builds every key without a built release for it. When a requester's issue is opened, edited or reopened, it builds only that issue's key, and only when every pick applies (below): it first merges them as the build would, in a blobless clone, and a key with a pick that doesn't apply is not built, since Resolve fixes it first. An issue's runs are named `carry #<issue>`, and a newer edit of the issue cancels its running or waiting run; scheduled and manual runs are named `carry #nightly` and wait for each other. It only reads issues.
+At 00:50 and 01:50 UTC and by hand (`gh workflow run carry.yml -R nitedani/t3-carry`), the workflow takes the newest upstream nightly `v<V>` and builds every key without a built release for it; when a requester's issue is opened, edited or reopened, only that issue's key. A key is built only when every pick applies (below): the workflow first merges them as the build would, in a blobless clone, and a key with a pick that doesn't apply is not built, since a machine installs no build that leaves a pick out; a Resolve press fixes the pick first. An issue's runs are named `carry #<issue>`, and a newer edit of the issue cancels its running or waiting run; scheduled and manual runs are named `carry #nightly` and wait for each other. It only reads issues.
 
 Per pick, in PR order:
 - When upstream merged the PR and its merge commit is in `v<V>`, the pick is `merged` and left out; removing its line is the dashboard's job.
@@ -56,7 +56,7 @@ A `built` release also has `t3-<V'>-linux-x64.tar.gz` and `SHA256SUMS`, and the 
 T3CODE_RELEASE_BASE_URL=https://github.com/nitedani/t3-carry/releases/download/c/<key> t3 update --yes <V'>
 ```
 
-On anything but a `built` release from the last 36 hours, or when that update fails, the machine takes the plain nightly (`t3 update --yes --channel nightly`; T3 counts `<V'>` as stable). Each run keeps the newest two releases of each requested key and every release younger than a day, and deletes every other `c/*` release with its tag. Each run also re-enables the workflow through GitHub's API, since GitHub disables a public repo's schedules after 60 days without activity.
+A machine installs a `built` release from the last 36 hours only when every pick it requests is `carried` in it; otherwise it keeps what it runs until a Resolve press, so a release with a `doesnt-build` pick is published only for its `cause`. With no picks, the machine takes the plain nightly (`t3 update --yes --channel nightly`; T3 counts `<V'>` as stable). Each run keeps the newest two releases of each requested key and every release younger than a day, and deletes every other `c/*` release with its tag. Each run also re-enables the workflow through GitHub's API, since GitHub disables a public repo's schedules after 60 days without activity.
 
 ## Resolve
 

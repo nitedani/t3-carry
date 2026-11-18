@@ -56,7 +56,7 @@ A `built` release also has `t3-<V'>-linux-x64.tar.gz` and `SHA256SUMS`, and the 
 T3CODE_RELEASE_BASE_URL=https://github.com/nitedani/t3-carry/releases/download/c/<key> t3 update --yes <V'>
 ```
 
-A machine installs a `built` release from the last 36 hours only when every pick it requests is `carried` in it; otherwise it keeps what it runs until a Resolve press, so a release with a `doesnt-build` pick is published only for its `cause`. With no picks, the machine takes the plain nightly (`t3 update --yes --channel nightly`; T3 counts `<V'>` as stable). Each run keeps the newest two releases of each requested key and every release younger than a day, and deletes every other `c/*` release with its tag. Each run also re-enables the workflow through GitHub's API, since GitHub disables a public repo's schedules after 60 days without activity.
+A machine installs the newest release of its key, whatever its age, only when every pick it requests is `carried` in it; otherwise, and while GitHub can't be read, it keeps what it runs until a Resolve press, so a release with a `doesnt-build` pick is published only for its `cause`. With no picks, the machine takes the plain nightly (`t3 update --yes --channel nightly`; T3 counts `<V'>` as stable). Each run keeps the newest two releases of each requested key and every release younger than a day, and deletes every other `c/*` release with its tag. Each run also re-enables the workflow through GitHub's API, since GitHub disables a public repo's schedules after 60 days without activity.
 
 ## Resolve
 

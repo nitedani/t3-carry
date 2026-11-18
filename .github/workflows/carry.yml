@@ -273,7 +273,7 @@ jobs:
             return $rc
           }
           # Sets cause for pick $1, which doesn't build over the kept picks: alone when it fails over the nightly alone, else the
-          # last kept pick of the shortest run of kept picks it fails over, found by bisection.
+          # last pick of a leading run of kept picks it fails over, found by halving the run.
           blame() {
             local lo=0 hi=${#kept[@]} mid
             cause=alone

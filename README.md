@@ -20,7 +20,7 @@ key=$(printf '%s\n' "$picks" | sha256sum | cut -c1-16)
 
 ## Builds
 
-At 00:50 and 01:50 UTC, on a requester's issue being opened, edited or reopened, and by hand (`gh workflow run carry.yml -R nitedani/t3-carry`), the workflow takes the newest upstream nightly `v<V>` and builds every key without a built release for it. It only reads issues.
+At 00:50 and 01:50 UTC and by hand (`gh workflow run carry.yml -R nitedani/t3-carry`), the workflow takes the newest upstream nightly `v<V>` and builds every key without a built release for it. When a requester's issue is opened, edited or reopened, it builds only that issue's key, and only when every pick applies (below): it first merges them as the build would, in a blobless clone, and a key with a pick that doesn't apply is not built, since Resolve fixes it first. An issue's runs are named `carry #<issue>`, and a newer edit of the issue cancels its running or waiting run; scheduled and manual runs are named `carry #nightly` and wait for each other. It only reads issues.
 
 Per pick, in PR order:
 - When upstream merged the PR and its merge commit is in `v<V>`, the pick is `merged` and left out; removing its line is the dashboard's job.

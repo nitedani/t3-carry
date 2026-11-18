@@ -68,23 +68,18 @@ jobs:
           echo "newest nightly: $version"
 
           # One pick (pr, sha, res) and its upstream facts. merged: its merge commit is in the nightly (upstream squash-merges,
-          # so the picked sha never is). supersededBy: closed unmerged, the PR the newest member's comment names. pinned: sha
-          # is the PR's.
+          # so the picked sha never is). pinned: sha is the PR's.
           facts() {
-            local pr=$1 sha=$2 res=$3 pull merged=false superseded=null pinned=false
+            local pr=$1 sha=$2 res=$3 pull merged=false pinned=false
             pull=$(gh api "repos/$UPSTREAM/pulls/$pr")
             if [ "$(jq -r .merged <<<"$pull")" = true ]; then
               case $(gh api "repos/$UPSTREAM/compare/$(jq -r .merge_commit_sha <<<"$pull")...v$version" --jq .status) in
                 ahead | identical) merged=true ;;
               esac
-            elif [ "$(jq -r .state <<<"$pull")" = closed ]; then
-              superseded=$(gh api --paginate "repos/$UPSTREAM/issues/$pr/comments?per_page=100" | jq -s --argjson pr "$pr" '
-                [add[] | select(.author_association | IN("MEMBER", "OWNER"))] | last | .body // ""
-                | [scan("(?:#|/pulls?/)([0-9]+)")[0] | tonumber | select(. != $pr)][0]')
             fi
             if gh api --paginate "repos/$UPSTREAM/pulls/$pr/commits?per_page=100" --jq '.[].sha' | grep -x "$sha" >/dev/null; then pinned=true; fi
-            jq -c --arg sha "$sha" --arg res "$res" --argjson merged "$merged" --argjson superseded "$superseded" --argjson pinned "$pinned" \
-              '{pr: .number, $sha, res: (if $res == "" then null else $res end), upstream: (if .merged then "merged" else .state end), head: .head.sha, supersededBy: $superseded, $merged, $pinned}' <<<"$pull"
+            jq -c --arg sha "$sha" --arg res "$res" --argjson merged "$merged" --argjson pinned "$pinned" \
+              '{pr: .number, $sha, res: (if $res == "" then null else $res end), $merged, $pinned}' <<<"$pull"
           }
 
           # The build's apply as a merge-tree chain in a blobless clone, for the request with key $1: true when each pinned,
@@ -209,8 +204,8 @@ jobs:
       - name: Apply each pick, then build
         run: |
           set -uo pipefail
-          # Each line of $RUNNER_TEMP/states is "<pr> <state>"; a later line overrides an earlier one.
-          state() { echo "$1 $2" >> "$RUNNER_TEMP/states"; }
+          # Each line of $RUNNER_TEMP/states is "<pr> <state> [<cause>]"; a later line overrides an earlier one.
+          state() { echo "$*" >> "$RUNNER_TEMP/states"; }
           for pr in $(jq -r '.[] | select(.merged) | .pr' <<<"$PICKS"); do state "$pr" merged; done
           for pr in $(jq -r '.[] | select(.pinned or .merged | not) | .pr' <<<"$PICKS"); do state "$pr" unpinned; done
 
@@ -249,6 +244,7 @@ jobs:
               (cd "$d" && vp test run ${files[$d]}) || return
             done
           }
+          # A probe build (probe=1) keeps no archive.
           build() {
             local tests sha
             echo "::group::build: the nightly and ${applied[*]:-no pick}"
@@ -267,10 +263,21 @@ jobs:
               node apps/server/scripts/cli.ts build-exe --verbose &&
               node scripts/build-cli-archive.ts --platform linux --arch x64 --version "$VC" --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" --output-dir release-cli &&
               node scripts/smoke-cli-archive.ts --archive "release-cli/t3-$VC-linux-x64.tar.gz" --expect-version "$VC" &&
-              cp "release-cli/t3-$VC-linux-x64.tar.gz" "$RUNNER_TEMP/"
+              { [ -n "${probe-}" ] || cp "release-cli/t3-$VC-linux-x64.tar.gz" "$RUNNER_TEMP/"; }
             local rc=$?
             echo "::endgroup::"
             return $rc
+          }
+          # Sets cause for pick $1, which doesn't build over the kept picks: alone when it fails over the nightly alone, else the
+          # first kept pick that, with the kept picks before it, makes it fail.
+          blame() {
+            local i
+            cause=alone
+            for ((i = 0; i < ${#kept[@]}; i++)); do
+              apply "${kept[@]:0:i}" "$1"
+              if [ ${#applied[@]} -gt "$i" ] && ! probe=1 build; then return; fi
+              cause=${kept[i]}
+            done
           }
 
           mapfile -t candidates < <(jq -r '.[] | select(.pinned and (.merged | not)) | .pr' <<<"$PICKS")
@@ -284,7 +291,9 @@ jobs:
             if build; then
               for pr in "${together[@]}"; do
                 apply "${kept[@]}" "$pr"
-                if [ ${#applied[@]} -gt ${#kept[@]} ] && build; then kept+=("$pr"); fi
+                if [ ${#applied[@]} -gt ${#kept[@]} ]; then
+                  if build; then kept+=("$pr"); else blame "$pr"; state "$pr" doesnt-build "$cause"; fi
+                fi
               done
             else
               echo broken > "$RUNNER_TEMP/recipe"
@@ -301,9 +310,10 @@ jobs:
           set -euo pipefail
           archive=t3-$VC-linux-x64.tar.gz assets=() recipe=$(cat "$RUNNER_TEMP/recipe" 2>/dev/null || echo ok)
           jq -n --arg nightly "$V" --arg version "$VC" --arg recipe "$recipe" --argjson picks "$PICKS" --arg run "$RUN_URL" --rawfile states "$RUNNER_TEMP/states" '
-            ($states | split("\n") | map(select(. != "") | split(" ") | {(.[0]): .[1]}) | add) as $s
-            | [$picks[] | {pr, sha, res, state: $s[.pr | tostring], upstream, head, supersededBy}] as $p
-            | {schema: 2, $nightly, $version, state: (if any($p[]; .state == "carried") then "built" else "not-built" end),
+            ($states | split("\n") | map(select(. != "") | split(" ")
+              | {(.[0]): {state: .[1], cause: (.[2] | if . == null or . == "alone" then . else tonumber end)}}) | add) as $s
+            | [$picks[] | {pr, sha, res} + $s[.pr | tostring]] as $p
+            | {schema: 3, $nightly, $version, state: (if any($p[]; .state == "carried") then "built" else "not-built" end),
                $recipe, picks: $p, $run}' > carry.json
           cat carry.json
           if [ "$(jq -r .state carry.json)" = built ]; then

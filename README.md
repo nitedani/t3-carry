@@ -27,19 +27,19 @@ Per pick, in PR order:
 - When the sha is not a commit of the PR, it is `unpinned` and left out.
 - Otherwise it is merged into the tree: its resolution if the line names one, else the sha. A pick that conflicts is `doesnt-apply` and left out; the others still go in.
 
-Then upstream's release steps for the Linux x64 CLI archive run: install, typecheck, bundle, build and smoke test, with `dev` telemetry as upstream does outside pingdotgg. A pick merged by its resolution also runs `vp test run` on the test files its PR changes. When any step fails, the nightly alone is built, then in PR order each pick over the picks kept so far: a pick is kept when that builds, and is `doesnt-build` when it doesn't. So a resolution made over an earlier pick is built with that pick. When the nightly alone fails, every pick is `doesnt-build` and `recipe` is `broken`. On a night that builds, none of this runs.
+Then upstream's release steps for the Linux x64 CLI archive run: install, typecheck, bundle, build and smoke test, with `dev` telemetry as upstream does outside pingdotgg. A pick merged by its resolution also runs `vp test run` on the test files its PR changes. When any step fails, the nightly alone is built, then in PR order each pick over the picks kept so far: a pick is kept when that builds, and is `doesnt-build` when it doesn't. So a resolution made over an earlier pick is built with that pick. A `doesnt-build` pick is then built over the nightly alone, and over the first one, two, … of the kept picks, until it fails: its `cause` is `alone`, or the kept pick added last. When the nightly alone fails, every pick is `doesnt-build` and `recipe` is `broken`. On a night that builds, none of this runs.
 
-The build gets its own version `<V'>` = `<V>.c<key>` (for example `0.1.11-nightly.20261117.4825.c32b5b524027a2d1b`), which sorts above `<V>` and below the next nightly, so it never shares an install with the official `<V>` or another pick set. The result is the prerelease `c/<key>/v<V'>`, tagged on this repo's `main`. Its body and its `carry.json` asset are the same JSON, schema 2:
+The build gets its own version `<V'>` = `<V>.c<key>` (for example `0.1.11-nightly.20261117.4825.c32b5b524027a2d1b`), which sorts above `<V>` and below the next nightly, so it never shares an install with the official `<V>` or another pick set. The result is the prerelease `c/<key>/v<V'>`, tagged on this repo's `main`. Its body and its `carry.json` asset are the same JSON, schema 3, which says what the build did, not what upstream says of each PR now:
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "nightly": "<V>",
   "version": "<V'>",
   "state": "built",
   "recipe": "ok",
   "picks": [
-    {"pr": 31488, "sha": "<sha40>", "res": null, "state": "carried", "upstream": "open", "head": "<sha40>", "supersededBy": null}
+    {"pr": 31488, "sha": "<sha40>", "res": null, "state": "carried", "cause": null}
   ],
   "run": "<the run's URL>"
 }
@@ -48,8 +48,7 @@ The build gets its own version `<V'>` = `<V>.c<key>` (for example `0.1.11-nightl
 - `state`: `built` when at least one pick is `carried`, else `not-built`.
 - `recipe`: `ok`, or `broken` when the nightly alone fails to build with these steps.
 - Each pick's `state`: `carried`, `doesnt-apply`, `doesnt-build`, `merged` or `unpinned`.
-- `upstream`: the PR's state, `open`, `closed` or `merged`. `head`: its newest commit.
-- `supersededBy`: for a PR closed unmerged, the PR that the newest comment by a pingdotgg member names, else `null`.
+- `cause`: for a `doesnt-build` pick, `alone` or the number of the earlier pick it fails with; else `null`, also when `recipe` is `broken`.
 
 A `built` release also has `t3-<V'>-linux-x64.tar.gz` and `SHA256SUMS`, and the machine installs it with:
 

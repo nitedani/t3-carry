@@ -4,7 +4,7 @@ This repo builds [pingdotgg/t3code](https://github.com/pingdotgg/t3code) nightli
 
 ## Requests
 
-Each machine has one open issue here, opened by its own gh login (`nitedani` or `nitedani-agent`, `REQUESTERS` in carry.yml; other authors' issues are ignored). The machine keeps the number in `~/.local/share/t3-carry/issue`, and its dashboard is the only writer of the body: up to 10 lines, one per PR, nothing else.
+Each machine has one open issue here, opened by its own gh login (`nitedani` or `nitedani-agent`, `REQUESTERS` in carry.yml; other authors' issues are ignored). The machine keeps the number in `~/.local/share/t3-carry/issue`, and its dashboard is the only writer of the body: up to 20 lines, one per PR, nothing else.
 
 ```
 pick 31488 809f8bb59a0e2363ff284562645ba0f4cebd60c8

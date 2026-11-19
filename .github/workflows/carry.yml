@@ -25,7 +25,8 @@ env:
   UPSTREAM: pingdotgg/t3code
   # The machines' gh logins; other authors' issues are not requests.
   REQUESTERS: '["nitedani","nitedani-agent"]'
-  PICK: "^pick [1-9][0-9]{0,6} [0-9a-f]{40}( [0-9a-f]{40})?$"
+  # An upstream PR, or <login>/t3code#<n>: an open PR on the requester's own fork, which takes no resolution.
+  PICK: "^pick ([1-9][0-9]{0,6} [0-9a-f]{40}( [0-9a-f]{40})?|[A-Za-z0-9-]+/t3code#[1-9][0-9]{0,6} [0-9a-f]{40})$"
   # resolves <sha> <res> <tip>: res holds the pick, and its own first-parent line (what neither tip nor the pick has) starts
   # with a merge and merges only the pick or code already in tip, so a resolution made over a pick that is gone can't bring
   # it back. The plan's check and the build's apply both run it.
@@ -68,19 +69,20 @@ jobs:
           [ -n "$version" ] || { echo "::error::no nightly release on $UPSTREAM"; exit 1; }
           echo "newest nightly: $version"
 
-          # One pick (pr, sha, res) and its upstream facts. merged: its merge commit is in the nightly (upstream squash-merges,
-          # so the picked sha never is). pinned: sha is the PR's.
+          # One pick (pr, sha, res) and its PR's facts. merged: its merge commit is in the nightly (upstream squash-merges,
+          # so the picked sha never is); an own pick never is. pinned: sha is the PR's.
           facts() {
-            local pr=$1 sha=$2 res=$3 pull merged=false pinned=false
-            pull=$(gh api "repos/$UPSTREAM/pulls/$pr")
-            if [ "$(jq -r .merged <<<"$pull")" = true ]; then
+            local pr=$1 sha=$2 res=$3 repo=$UPSTREAM n=$1 pull merged=false pinned=false
+            if [[ $pr == */* ]]; then repo=${pr%#*} n=${pr#*#}; fi
+            pull=$(gh api "repos/$repo/pulls/$n")
+            if [ "$repo" = "$UPSTREAM" ] && [ "$(jq -r .merged <<<"$pull")" = true ]; then
               case $(gh api "repos/$UPSTREAM/compare/$(jq -r .merge_commit_sha <<<"$pull")...v$version" --jq .status) in
                 ahead | identical) merged=true ;;
               esac
             fi
-            if gh api --paginate "repos/$UPSTREAM/pulls/$pr/commits?per_page=100" --jq '.[].sha' | grep -x "$sha" >/dev/null; then pinned=true; fi
-            jq -c --arg sha "$sha" --arg res "$res" --argjson merged "$merged" --argjson pinned "$pinned" \
-              '{pr: .number, $sha, res: (if $res == "" then null else $res end), $merged, $pinned}' <<<"$pull"
+            if gh api --paginate "repos/$repo/pulls/$n/commits?per_page=100" --jq '.[].sha' | grep -x "$sha" >/dev/null; then pinned=true; fi
+            jq -c --arg pr "$pr" --arg sha "$sha" --arg res "$res" --argjson merged "$merged" --argjson pinned "$pinned" \
+              '{pr: ($pr | tonumber? // .), $sha, res: (if $res == "" then null else $res end), $merged, $pinned}' <<<"$pull"
           }
 
           # The build's apply as a merge-tree chain in a blobless clone, for the request with key $1: true when each pinned,
@@ -94,7 +96,11 @@ jobs:
               git fetch -q --filter=blob:none --no-tags origin "+refs/tags/v$version:refs/tags/v$version" &&
               tip=$(git rev-parse "v$version^{commit}") || exit 1
             while read -r pr sha res; do
-              git fetch -q --filter=blob:none --no-tags origin "$sha" || exit 1
+              # An own pick is fetched from its fork with its blobs, which upstream doesn't have.
+              case $pr in
+                */*) git fetch -q --no-tags "https://github.com/${pr%#*}.git" "$sha" || exit 1 ;;
+                *) git fetch -q --filter=blob:none --no-tags origin "$sha" || exit 1 ;;
+              esac
               if [ -n "$res" ]; then
                 git fetch -q --no-tags "https://github.com/$author/t3code.git" "$res" || echo "::warning::$res is not on $author/t3code"
                 if ! resolves "$sha" "$res" "$tip"; then
@@ -119,7 +125,8 @@ jobs:
             n=$(jq -r .number <<<"$issue") author=$(jq -r .author <<<"$issue")
             body=$(jq -r .body <<<"$issue" | tr -d '\r')
             picks=$(grep -E "$PICK" <<<"$body" | LC_ALL=C sort -k2,2n) || true
-            if grep -vqE "$PICK|^\$" <<<"$body"; then echo "::error::#$n: a line is not 'pick <pr> <sha40> [<res40>]'"; continue
+            if grep -vqE "$PICK|^\$" <<<"$body"; then echo "::error::#$n: a line is not 'pick <pr> <sha40> [<res40>]' or 'pick <login>/t3code#<pr> <sha40>'"; continue
+            elif grep -vqE "^(pick ([1-9]|$author/t3code#)|\$)" <<<"$picks"; then echo "::error::#$n: an own pick is not on $author/t3code"; continue
             elif [ "$(grep -c . <<<"$picks")" -gt 10 ]; then echo "::error::#$n: more than 10 picks"; continue
             elif [ -n "$(cut -d' ' -f2 <<<"$picks" | uniq -d)" ]; then echo "::error::#$n: a PR is picked twice"; continue
             fi
@@ -188,9 +195,13 @@ jobs:
           git -c checkout.workers=0 checkout -q --detach "v$V"
           git config user.name carry
           git config user.email carry@users.noreply.github.com
-          for sha in $(jq -r '.[] | select(.pinned and (.merged | not)) | .sha' <<<"$PICKS"); do
-            git fetch -q --filter=blob:none --no-tags origin "$sha"
-          done
+          # An own pick is fetched from its fork with its blobs, which upstream doesn't have.
+          while read -r pr sha; do
+            case $pr in
+              */*) git fetch -q --no-tags "https://github.com/${pr%#*}.git" "$sha" ;;
+              *) git fetch -q --filter=blob:none --no-tags origin "$sha" ;;
+            esac
+          done < <(jq -r '.[] | select(.pinned and (.merged | not)) | "\(.pr) \(.sha)"' <<<"$PICKS")
           # A resolution is read only from the requester's own fork, with its blobs, which upstream doesn't have.
           for res in $(jq -r '.[] | select(.pinned and (.merged | not)) | .res // empty' <<<"$PICKS"); do
             git fetch -q --no-tags "https://github.com/$AUTHOR/t3code.git" "$res" || echo "::warning::$res is not on $AUTHOR/t3code"
@@ -222,7 +233,7 @@ jobs:
             applied=() resolved=()
             git checkout -qf --detach "v$V" && git clean -ffdxq -e node_modules || exit 1
             for pr in "$@"; do
-              read -r sha res < <(jq -r --argjson pr "$pr" '.[] | select(.pr == $pr) | "\(.sha) \(.res // "")"' <<<"$PICKS")
+              read -r sha res < <(jq -r --arg pr "$pr" '.[] | select(.pr | tostring == $pr) | "\(.sha) \(.res // "")"' <<<"$PICKS")
               if [ -n "$res" ] && ! resolves "$sha" "$res" HEAD; then
                 echo "::warning::#$pr: $res is not a resolution of $sha onto tonight's tree"; state "$pr" doesnt-apply
               elif git merge -q --no-edit -m "carry #$pr at $sha" "${res:-$sha}"; then
@@ -320,7 +331,7 @@ jobs:
           archive=t3-$VC-linux-x64.tar.gz assets=() recipe=$(cat "$RUNNER_TEMP/recipe" 2>/dev/null || echo ok)
           jq -n --arg nightly "$V" --arg version "$VC" --arg recipe "$recipe" --argjson picks "$PICKS" --arg run "$RUN_URL" --rawfile states "$RUNNER_TEMP/states" '
             ($states | split("\n") | map(select(. != "") | split(" ")
-              | {(.[0]): {state: .[1], cause: (.[2] | if . == null or . == "alone" then . else tonumber end)}}) | add) as $s
+              | {(.[0]): {state: .[1], cause: (.[2] | tonumber? // .)}}) | add) as $s
             | [$picks[] | {pr, sha, res} + $s[.pr | tostring]] as $p
             | {schema: 3, $nightly, $version, state: (if any($p[]; .state == "carried") then "built" else "not-built" end),
                $recipe, picks: $p, $run}' > carry.json

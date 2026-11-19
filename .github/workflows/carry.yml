@@ -71,13 +71,15 @@ jobs:
 
           # One pick (pr, sha, res) and its PR's facts. merged: its merge commit is in the nightly (upstream squash-merges,
           # so the picked sha never is); an own pick never is. pinned: sha is the PR's. Fails on request #$n when the PR
-          # can't be read, or is an own PR that is closed.
+          # can't be read, or is an own PR that is closed or not based on main.
           facts() {
             local pr=$1 sha=$2 res=$3 repo=$UPSTREAM num=$1 pull merged=false pinned=false
             if [[ $pr == */* ]]; then repo=${pr%#*} num=${pr#*#}; fi
             pull=$(gh api "repos/$repo/pulls/$num") || { echo "::error::#$n: can't read pull request $pr" >&2; return 1; }
             if [ "$repo" != "$UPSTREAM" ] && [ "$(jq -r .state <<<"$pull")" != open ]; then
               echo "::error::#$n: $pr is closed" >&2; return 1
+            elif [ "$repo" != "$UPSTREAM" ] && [ "$(jq -r .base.ref <<<"$pull")" != main ]; then
+              echo "::error::#$n: $pr is not based on main" >&2; return 1
             fi
             if [ "$repo" = "$UPSTREAM" ] && [ "$(jq -r .merged <<<"$pull")" = true ]; then
               case $(gh api "repos/$UPSTREAM/compare/$(jq -r .merge_commit_sha <<<"$pull")...v$version" --jq .status) in

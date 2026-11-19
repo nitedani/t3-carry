@@ -108,7 +108,8 @@ jobs:
             while read -r pr sha res; do
               # An own pick is fetched from its fork with its blobs, which upstream doesn't have.
               case $pr in
-                */*) git fetch -q --no-tags "https://github.com/${pr%#*}.git" "$sha" || exit 1 ;;
+                */*) git fetch -q --no-tags "https://github.com/${pr%#*}.git" "$sha" ||
+                  { echo "::error::$pr: can't fetch $sha from ${pr%#*}"; return 1; } ;;
                 *) git fetch -q --filter=blob:none --no-tags origin "$sha" || exit 1 ;;
               esac
               if [ -n "$res" ]; then

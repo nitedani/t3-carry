@@ -182,7 +182,8 @@ jobs:
       group: carry-key-${{ matrix.key }}
       cancel-in-progress: false
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # a set that fails together is rebuilt one pick at a time to find the culprit: about one build per pick, up to 20
+    timeout-minutes: 240
     permissions:
       contents: write
     strategy:

@@ -10,12 +10,13 @@ Each machine has one open issue here, opened by its own gh login (`nitedani` or 
 pick 31488 809f8bb59a0e2363ff284562645ba0f4cebd60c8
 pick 37306 8c549d97753af96dba62219c9ae19f61ff7c3431 <res40>
 pick nitedani/t3code#12 <sha40>
+pick nitedani/t3code#2 <sha40> <res40>
 ```
 
-The sha must be a commit of that PR; a newer push is built only once the line names it. The optional third field is a resolution (below). `<login>/t3code#<n>` names an open PR on the issue author's own fork, for a change of our own with no upstream PR; it takes no resolution, and an issue with a line naming any other fork is skipped. An own PR must be open and based on the fork's `main`; when it isn't, or a pick's PR can't be read, that request is not built and its run shows an error. The key of a request, computed the same way by the machine:
+The sha must be a commit of that PR; a newer push is built only once the line names it. The optional third field is a resolution (below). `<login>/t3code#<n>` names an open PR on the issue author's own fork, for a change of our own with no upstream PR; an issue with a line naming any other fork is skipped. An own PR must be open and based on the fork's `main`; when it isn't, or a pick's PR can't be read, that request is not built and its run shows an error. The key of a request, computed the same way by the machine:
 
 ```bash
-picks=$(tr -d '\r' <<<"$body" | grep -E '^pick ([1-9][0-9]{0,6} [0-9a-f]{40}( [0-9a-f]{40})?|[A-Za-z0-9-]+/t3code#[1-9][0-9]{0,6} [0-9a-f]{40})$' | LC_ALL=C sort -k2,2n)
+picks=$(tr -d '\r' <<<"$body" | grep -E '^pick ([1-9][0-9]{0,6}|[A-Za-z0-9-]+/t3code#[1-9][0-9]{0,6}) [0-9a-f]{40}( [0-9a-f]{40})?$' | LC_ALL=C sort -k2,2n)
 key=$(printf '%s\n' "$picks" | sha256sum | cut -c1-16)
 ```
 
@@ -64,7 +65,7 @@ A machine installs the newest release of its key, whatever its age, only when ev
 
 ## Resolve
 
-A pick that doesn't apply or build is resolved from its machine's dashboard: one Resolve button starts a T3 thread on that machine. For an own pick it merges the nightly into the PR's branch (and an earlier pick it fails with), resolves it, pushes the branch and moves the line to its new head; an own pick never gets a resolution. For our own open upstream PR it rebases the PR itself and moves the line to its new head. For any other PR it merges the sha onto the nightly (with `--no-ff`, over the earlier picks only when it conflicts with them), resolves it, pushes the commit as branch `t3-carry/<pr>` of the requester's own fork `<login>/t3code`, and adds its sha to the line. The build fetches a resolution only from `https://github.com/<issue author>/t3code`, and uses it only when it holds the pick and its own first-parent line starts with a merge that brings in nothing but the pick and code already in that night's tree; otherwise the pick is `doesnt-apply`. Git's three-way merge then carries the resolution onto later nightlies. The dashboard deletes a `t3-carry/<pr>` branch once no line names it.
+A pick that doesn't apply or build is resolved from its machine's dashboard: one Resolve button starts a T3 thread on that machine. For an own pick that fails over the nightly alone it merges the nightly into the PR's branch, resolves it, pushes the branch and moves the line to its new head; an own pick that fails only with an earlier pick gets a resolution as below, on branch `t3-carry/own-<n>`, so the PR itself never holds another pick's code. For our own open upstream PR it rebases the PR itself and moves the line to its new head. For any other PR it merges the sha onto the nightly (with `--no-ff`, over the earlier picks only when it conflicts with them), resolves it, pushes the commit as branch `t3-carry/<pr>` of the requester's own fork `<login>/t3code`, and adds its sha to the line. The build fetches a resolution only from `https://github.com/<issue author>/t3code`, and uses it only when it holds the pick and its own first-parent line starts with a merge that brings in nothing but the pick and code already in that night's tree; otherwise the pick is `doesnt-apply`. Git's three-way merge then carries the resolution onto later nightlies. The dashboard deletes a `t3-carry/<pr>` or `t3-carry/own-<n>` branch once no line names it.
 
 When the nightly alone doesn't build (`recipe: broken` in carry.json, so upstream changed how it builds), no pick is at fault: a Resolve press on private, whose login owns this repo, brings the build steps of `carry.yml` in line with upstream's `release.yml` and `release-desktop.yml` at that nightly and restarts the builds. A press on any other machine leaves a note saying so.
 

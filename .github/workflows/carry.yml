@@ -126,7 +126,7 @@ jobs:
             body=$(jq -r .body <<<"$issue" | tr -d '\r')
             picks=$(grep -E "$PICK" <<<"$body" | LC_ALL=C sort -k2,2n) || true
             if grep -vqE "$PICK|^\$" <<<"$body"; then echo "::error::#$n: a line is not 'pick <pr> <sha40> [<res40>]' or 'pick <login>/t3code#<pr> <sha40>'"; continue
-            elif grep -vqE "^(pick ([1-9]|$author/t3code#)|\$)" <<<"$picks"; then echo "::error::#$n: an own pick is not on $author/t3code"; continue
+            elif grep -vqE "^(pick ([1-9][0-9]* |$author/t3code#)|\$)" <<<"$picks"; then echo "::error::#$n: an own pick is not on $author/t3code"; continue
             elif [ "$(grep -c . <<<"$picks")" -gt 10 ]; then echo "::error::#$n: more than 10 picks"; continue
             elif [ -n "$(cut -d' ' -f2 <<<"$picks" | uniq -d)" ]; then echo "::error::#$n: a PR is picked twice"; continue
             fi

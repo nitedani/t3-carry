@@ -86,7 +86,11 @@ jobs:
                 ahead | identical) merged=true ;;
               esac
             fi
-            if gh api --paginate "repos/$repo/pulls/$num/commits?per_page=100" --jq '.[].sha' | grep -x "$sha" >/dev/null; then pinned=true; fi
+            # The commit list stops at 250 commits, which an own PR passes once a Resolve merges a nightly into it.
+            if [ "$(jq -r .head.sha <<<"$pull")" = "$sha" ] ||
+              gh api --paginate "repos/$repo/pulls/$num/commits?per_page=100" --jq '.[].sha' | grep -x "$sha" >/dev/null; then
+              pinned=true
+            fi
             jq -c --arg pr "$pr" --arg sha "$sha" --arg res "$res" --argjson merged "$merged" --argjson pinned "$pinned" \
               '{pr: ($pr | tonumber? // .), $sha, res: (if $res == "" then null else $res end), $merged, $pinned}' <<<"$pull"
           }

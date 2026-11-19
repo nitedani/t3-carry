@@ -9,21 +9,24 @@ Each machine has one open issue here, opened by its own gh login (`nitedani` or 
 ```
 pick 31488 809f8bb59a0e2363ff284562645ba0f4cebd60c8
 pick 37306 8c549d97753af96dba62219c9ae19f61ff7c3431 <res40>
+pick nitedani/t3code#12 <sha40>
 ```
 
-The sha must be a commit of that PR; a newer push is built only once the line names it. The optional third field is a resolution (below). The key of a request, computed the same way by the machine:
+The sha must be a commit of that PR; a newer push is built only once the line names it. The optional third field is a resolution (below). `<login>/t3code#<n>` names an open PR on the issue author's own fork, for a change of our own with no upstream PR; it takes no resolution, and an issue with a line naming any other fork is skipped. The key of a request, computed the same way by the machine:
 
 ```bash
-picks=$(tr -d '\r' <<<"$body" | grep -E '^pick [1-9][0-9]{0,6} [0-9a-f]{40}( [0-9a-f]{40})?$' | LC_ALL=C sort -k2,2n)
+picks=$(tr -d '\r' <<<"$body" | grep -E '^pick ([1-9][0-9]{0,6} [0-9a-f]{40}( [0-9a-f]{40})?|[A-Za-z0-9-]+/t3code#[1-9][0-9]{0,6} [0-9a-f]{40})$' | LC_ALL=C sort -k2,2n)
 key=$(printf '%s\n' "$picks" | sha256sum | cut -c1-16)
 ```
+
+PR order below is this sort's: own picks first, then upstream PRs by number.
 
 ## Builds
 
 At 00:50 and 01:50 UTC and by hand (`gh workflow run carry.yml -R nitedani/t3-carry`), the workflow takes the newest upstream nightly `v<V>` and builds every key without a built release for it; when a requester's issue is opened, edited or reopened, only that issue's key. A key is built only when every pick applies (below): the workflow first merges them as the build would, in a blobless clone, and a key with a pick that doesn't apply is not built, since a machine installs no build that leaves a pick out; a Resolve press fixes the pick first. An issue's runs are named `carry #<issue>`, and a newer edit of the issue cancels its running or waiting run; scheduled and manual runs are named `carry #nightly` and wait for each other. It only reads issues.
 
 Per pick, in PR order:
-- When upstream merged the PR and its merge commit is in `v<V>`, the pick is `merged` and left out; removing its line is the dashboard's job.
+- When upstream merged the PR and its merge commit is in `v<V>`, the pick is `merged` and left out; removing its line is the dashboard's job. An own pick is never `merged`.
 - When the sha is not a commit of the PR, it is `unpinned` and left out.
 - Otherwise it is merged into the tree: its resolution if the line names one, else the sha. A pick that conflicts is `doesnt-apply` and left out; the others still go in.
 
@@ -47,8 +50,9 @@ The build gets its own version `<V'>` = `<V>.c<key>` (for example `0.1.11-nightl
 
 - `state`: `built` when at least one pick is `carried`, else `not-built`.
 - `recipe`: `ok`, or `broken` when the nightly alone fails to build with these steps.
+- Each pick's `pr`: the upstream PR's number, or for an own pick the string from its line, such as `"nitedani/t3code#12"`.
 - Each pick's `state`: `carried`, `doesnt-apply`, `doesnt-build`, `merged` or `unpinned`.
-- `cause`: for a `doesnt-build` pick, `alone` or the number of the earlier pick it fails with; else `null`, also when `recipe` is `broken`.
+- `cause`: for a `doesnt-build` pick, `alone` or the `pr` of the earlier pick it fails with; else `null`, also when `recipe` is `broken`.
 
 A `built` release also has `t3-<V'>-linux-x64.tar.gz` and `SHA256SUMS`, and the machine installs it with:
 

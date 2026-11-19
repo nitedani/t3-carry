@@ -70,14 +70,14 @@ jobs:
           echo "newest nightly: $version"
 
           # One pick (pr, sha, res) and its PR's facts. merged: its merge commit is in the nightly (upstream squash-merges,
-          # so the picked sha never is); an own pick never is. pinned: sha is the PR's. Fails on request #$n when the PR
-          # can't be read, or is an own PR that is closed or not based on main.
+          # so the picked sha never is); an own pick never is. pinned: sha is the PR's. Fails on request #$n when
+          # the PR can't be read, or is an own PR not based on main or not open (closed, or merged into the fork).
           facts() {
             local pr=$1 sha=$2 res=$3 repo=$UPSTREAM num=$1 pull merged=false pinned=false
             if [[ $pr == */* ]]; then repo=${pr%#*} num=${pr#*#}; fi
             pull=$(gh api "repos/$repo/pulls/$num") || { echo "::error::#$n: can't read pull request $pr" >&2; return 1; }
             if [ "$repo" != "$UPSTREAM" ] && [ "$(jq -r .state <<<"$pull")" != open ]; then
-              echo "::error::#$n: $pr is closed" >&2; return 1
+              echo "::error::#$n: $pr is not open" >&2; return 1
             elif [ "$repo" != "$UPSTREAM" ] && [ "$(jq -r .base.ref <<<"$pull")" != main ]; then
               echo "::error::#$n: $pr is not based on main" >&2; return 1
             fi
@@ -129,6 +129,8 @@ jobs:
 
           : > requests.jsonl
           : > wanted
+          # Every valid request's key, whose releases prune keeps, also when its PRs can't be read tonight.
+          : > requested
           gh api --paginate "repos/$GH_REPO/issues?state=open&per_page=100" |
             jq -c --argjson who "$REQUESTERS" '.[] | select(.pull_request == null and (.user.login | IN($who[]))) | {number, author: .user.login, body: (.body // "")}' > issues.jsonl
           while IFS= read -r issue; do
@@ -144,6 +146,7 @@ jobs:
             # t3-update computes the key with this same line.
             key=$(printf '%s\n' "$picks" | sha256sum | cut -c1-16)
             echo "#$n: key $key"
+            echo "$key" >> requested
             found=$(while read -r _ pr sha res; do facts "$pr" "$sha" "$res" || exit; done <<<"$picks") || continue
             jq -sc --arg key "$key" --arg author "$author" '{$key, $author, picks: .}' <<<"$found" >> requests.jsonl
             if [ -z "$ISSUE" ] || [ "$n" = "$ISSUE" ]; then echo "$key" >> wanted; fi
@@ -165,7 +168,7 @@ jobs:
           done
           {
             echo "version=$version"
-            echo "keys=$(jq -c 'map(.key)' requests.json)"
+            echo "keys=$(jq -nRc '[inputs] | unique' requested)"
             echo "work=$(cat work.json)"
           } >> "$GITHUB_OUTPUT"
 

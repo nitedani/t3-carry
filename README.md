@@ -12,7 +12,7 @@ pick 37306 8c549d97753af96dba62219c9ae19f61ff7c3431 <res40>
 pick nitedani/t3code#12 <sha40>
 ```
 
-The sha must be a commit of that PR; a newer push is built only once the line names it. The optional third field is a resolution (below). `<login>/t3code#<n>` names an open PR on the issue author's own fork, for a change of our own with no upstream PR; it takes no resolution, and an issue with a line naming any other fork is skipped. The key of a request, computed the same way by the machine:
+The sha must be a commit of that PR; a newer push is built only once the line names it. The optional third field is a resolution (below). `<login>/t3code#<n>` names an open PR on the issue author's own fork, for a change of our own with no upstream PR; it takes no resolution, and an issue with a line naming any other fork is skipped. An own PR must be open and based on the fork's `main`; when it isn't, or a pick's PR can't be read, that request is not built and its run shows an error. The key of a request, computed the same way by the machine:
 
 ```bash
 picks=$(tr -d '\r' <<<"$body" | grep -E '^pick ([1-9][0-9]{0,6} [0-9a-f]{40}( [0-9a-f]{40})?|[A-Za-z0-9-]+/t3code#[1-9][0-9]{0,6} [0-9a-f]{40})$' | LC_ALL=C sort -k2,2n)

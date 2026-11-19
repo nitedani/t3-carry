@@ -306,15 +306,21 @@ jobs:
             local lo=0 hi=${#kept[@]} mid
             cause=alone
             ((hi > 0)) || return 0
+            cause=
+            ((SECONDS < budget)) || return 0
             apply "$1"
-            if [ ${#applied[@]} -gt 0 ] && ! probe=1 build; then return 0; fi
+            if [ ${#applied[@]} -gt 0 ] && ! probe=1 build; then cause=alone; return 0; fi
             while ((hi - lo > 1)); do
+              ((SECONDS < budget)) || return 0
               mid=$(((lo + hi) / 2))
               apply "${kept[@]:0:mid}" "$1"
               if [ ${#applied[@]} -gt "$mid" ] && ! probe=1 build; then hi=$mid; else lo=$mid; fi
             done
             cause=${kept[hi - 1]}
           }
+          # Past this step's budget no build starts, so the release still publishes inside the job's timeout: a pick not tried
+          # yet, or whose cause isn't found, stays "doesn't build" with no cause.
+          budget=$((200 * 60))
 
           mapfile -t candidates < <(jq -r '.[] | select(.pinned and (.merged | not)) | .pr' <<<"$PICKS")
           apply "${candidates[@]}"
@@ -326,9 +332,10 @@ jobs:
             apply
             if build; then
               for pr in "${together[@]}"; do
+                ((SECONDS < budget)) || break
                 apply "${kept[@]}" "$pr"
                 if [ ${#applied[@]} -gt ${#kept[@]} ]; then
-                  if build; then kept+=("$pr"); else blame "$pr"; state "$pr" doesnt-build "$cause"; fi
+                  if build; then kept+=("$pr"); else blame "$pr"; state "$pr" doesnt-build ${cause:+"$cause"}; fi
                 fi
               done
             else
